@@ -1,0 +1,17 @@
+[Unit]
+Description=HOMEHOSTINGSER Control Panel (netswitch)
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/controlpanel/app.py
+WorkingDirectory=/opt/controlpanel
+Restart=on-failure
+RestartSec=10
+User=root
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
