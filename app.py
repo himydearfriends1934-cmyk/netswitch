@@ -10,8 +10,9 @@ from flask import Flask, jsonify, request, render_template_string
 app = Flask(__name__)
 
 DNS_PRESETS = {
-    "domestic": {"label":"国内 DNS","servers":["223.5.5.5","223.6.6.6","114.114.114.114"],"note":"阿里云 / 114DNS"},
-    "overseas": {"label":"国际 DNS","servers":["1.1.1.1","8.8.8.8","9.9.9.9"],"note":"Cloudflare / Google / Quad9"},
+    "auto": {"label":"智能路由 (推荐)","servers":["10.0.0.1","192.168.2.1","100.100.100.100"],"note":"局域网网关 + Tailscale 直通，防运营商 UDP 拦截"},
+    "domestic": {"label":"国内公共 DNS","servers":["10.0.0.1","223.5.5.5","114.114.114.114"],"note":"路由器网关 + 阿里云 / 114DNS"},
+    "overseas": {"label":"国际公共 DNS","servers":["10.0.0.1","1.1.1.1","8.8.8.8"],"note":"路由器网关 + Cloudflare / Google"},
 }
 MIRROR_PRESETS = {
     "domestic":{"label":"清华 TUNA","url":"mirrors.tuna.tsinghua.edu.cn","content":
@@ -721,12 +722,14 @@ footer{text-align:center;padding:12px;color:var(--t3);font-size:.63rem;border-to
       <div class="ir"><div class="ir-l">当前 DNS</div><div class="ir-v" id="dns-sv">—</div><div class="ir-s" id="dns-note">—</div></div>
       <div class="divider"></div>
       <div class="seg">
+        <button class="sb" id="dns-a" onclick="setDNS('auto')">⚡ 智能网关<small>防拦截推荐</small></button>
         <button class="sb" id="dns-d" onclick="setDNS('domestic')">🇨🇳 国内<small>阿里 / 114</small></button>
-        <button class="sb" id="dns-o" onclick="setDNS('overseas')">🌐 国际<small>Cloudflare / Google</small></button>
+        <button class="sb" id="dns-o" onclick="setDNS('overseas')">🌐 国际<small>CF / Google</small></button>
       </div>
       <div style="margin-top:7px;font-size:.65rem;color:var(--t3);line-height:1.8">
-        <b style="color:var(--t2)">国内：</b>223.5.5.5 · 223.6.6.6 · 114.114.114.114<br>
-        <b style="color:var(--t2)">国际：</b>1.1.1.1 · 8.8.8.8 · 9.9.9.9
+        <b style="color:var(--t2)">智能：</b>10.0.0.1 · 192.168.2.1 · 100.100.100.100 (最稳，测速脚本必通)<br>
+        <b style="color:var(--t2)">国内：</b>10.0.0.1 · 223.5.5.5 · 114.114.114.114<br>
+        <b style="color:var(--t2)">国际：</b>10.0.0.1 · 1.1.1.1 · 8.8.8.8
       </div>
     </div>
   </div>
@@ -918,12 +921,15 @@ function applyStatus(d){
   applyWifiList(d.wifi_networks||[], gw, primaryWifi, primaryWifiInfo);
 
   const dm=d.dns.mode;
-  const dl={domestic:'🇨🇳 国内 DNS',overseas:'🌐 国际 DNS',custom:'⚙️ 自定义'};
+  const dl={auto:'⚡ 智能网关 (推荐)',domestic:'🇨🇳 国内公共 DNS',overseas:'🌐 国际公共 DNS',custom:'⚙️ 自定义'};
   const dp=document.getElementById('dns-pill');dp.textContent=dl[dm]||dm;
-  dp.className='pill '+(dm==='domestic'?'p-up':dm==='overseas'?'p-info':'p-unk');
+  dp.className='pill '+(dm==='auto'||dm==='domestic'?'p-up':dm==='overseas'?'p-info':'p-unk');
   document.getElementById('dns-sv').textContent=(d.dns.servers||[]).join(' · ')||'—';
   document.getElementById('dns-note').textContent=d.dns.presets?.[dm]?.note||'';
-  ['domestic','overseas'].forEach(m=>document.getElementById('dns-'+m[0]).className='sb'+(dm===m?' active':''));
+  ['auto','domestic','overseas'].forEach(m=>{
+    const el = document.getElementById('dns-'+m[0]);
+    if(el) el.className='sb'+(dm===m?' active':'');
+  });
 
   const mm=d.mirror.mode;
   const ml={domestic:'🇨🇳 清华 TUNA',ustc:'🎓 中科大 USTC',overseas:'🌐 官方源',custom:'⚙️ 自定义'};
