@@ -1073,15 +1073,21 @@ async function testIntel(name){
     const currentGw = document.getElementById('hdr-gw')?.textContent?.trim();
     if(name === currentGw || (currentGw && currentGw.startsWith('wl') && name.startsWith('wl'))){
       const g = d.geo || {};
-      document.getElementById('top-active-geo').textContent = `${d.flag||'🌍'} ${g.country||'未知'} · ${g.city||''}`;
-      document.getElementById('top-active-ip').textContent = g.query || '—';
-      document.getElementById('top-active-isp').textContent = g.org || g.isp || '—';
+      const geoEl = document.getElementById('top-active-geo');
+      if(geoEl) geoEl.textContent = `${d.flag||'🌍'} ${g.country||'未知'} · ${g.city||''}`;
+      const ipEl = document.getElementById('top-active-ip');
+      if(ipEl) ipEl.textContent = g.query || '—';
+      const ispEl = document.getElementById('top-active-isp');
+      if(ispEl) ispEl.textContent = g.org || g.isp || '—';
+      const latEl = document.getElementById('top-active-lat');
       const ld = d.latency?.domestic_ms, lg = d.latency?.international_ms;
-      document.getElementById('top-active-lat').innerHTML = `
-        <span class="${latC(ld)}">🇨🇳 ${ld!=null?ld+'ms':'超时'}</span>
-        <span style="color:var(--t3);margin:0 4px">|</span>
-        <span class="${latC(lg)}">🌐 ${lg!=null?lg+'ms':'超时'}</span>
-      `;
+      if(latEl) {
+        latEl.innerHTML = `
+          <span class="${latC(ld)}">🇨🇳 ${ld!=null?ld+'ms':'超时'}</span>
+          <span style="color:var(--t3);margin:0 4px">|</span>
+          <span class="${latC(lg)}">🌐 ${lg!=null?lg+'ms':'超时'}</span>
+        `;
+      }
     }
   }catch(e){
     const refreshedEl = document.getElementById('intel-'+name);
