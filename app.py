@@ -64,24 +64,45 @@ def get_all_wireless_ifaces():
     except:
         return ["wlp6s0"]
 
+# Global traffic rate tracker: iface -> (last_time, last_rx, last_tx, rx_rate, tx_rate)
+_traffic_history = {}
+
 def iface_info(name):
     code, out, _ = sh(f"ip -j addr show {name}")
     if code != 0 or not out:
-        return {"name":name,"state":"missing","ip":None,"mac":None,"speed":None,"rx_bytes":0,"tx_bytes":0}
+        return {"name":name,"state":"missing","ip":None,"mac":None,"speed":None,"rx_bytes":0,"tx_bytes":0,"rx_rate":0,"tx_rate":0}
     try:
         data = json.loads(out)[0]
     except:
-        return {"name":name,"state":"error","ip":None,"mac":None,"rx_bytes":0,"tx_bytes":0}
+        return {"name":name,"state":"error","ip":None,"mac":None,"rx_bytes":0,"tx_bytes":0,"rx_rate":0,"tx_rate":0}
     state = "up" if data.get("operstate") == "UP" else "down"
     ip = next((f"{a['local']}/{a['prefixlen']}" for a in data.get("addr_info",[]) if a.get("family")=="inet"), None)
     _, spd, _ = sh(f"cat /sys/class/net/{name}/speed 2>/dev/null")
     _, rx, _  = sh(f"cat /sys/class/net/{name}/statistics/rx_bytes 2>/dev/null")
     _, tx, _  = sh(f"cat /sys/class/net/{name}/statistics/tx_bytes 2>/dev/null")
+
+    rx_b = int(rx) if rx.isdigit() else 0
+    tx_b = int(tx) if tx.isdigit() else 0
+
+    # Calculate real-time throughput rates (bytes/sec)
+    now = time.time()
+    rx_rate = 0.0
+    tx_rate = 0.0
+    if name in _traffic_history:
+        prev_time, prev_rx, prev_tx, _, _ = _traffic_history[name]
+        dt = now - prev_time
+        if dt > 0.4:
+            rx_rate = max(0.0, (rx_b - prev_rx) / dt)
+            tx_rate = max(0.0, (tx_b - prev_tx) / dt)
+    _traffic_history[name] = (now, rx_b, tx_b, rx_rate, tx_rate)
+
     return {
         "name": name, "state": state, "ip": ip, "mac": data.get("address"),
         "speed": f"{spd} Mbps" if spd.isdigit() else None,
-        "rx_bytes": int(rx) if rx.isdigit() else 0,
-        "tx_bytes": int(tx) if tx.isdigit() else 0,
+        "rx_bytes": rx_b,
+        "tx_bytes": tx_b,
+        "rx_rate": rx_rate,
+        "tx_rate": tx_rate,
     }
 
 def get_all_wifi_networks(wireless_iface="wlp6s0"):
@@ -639,8 +660,12 @@ footer{text-align:center;padding:12px;color:var(--t3);font-size:.63rem;border-to
         <div id="top-active-ip" style="font-size:.85rem; font-weight:800; font-family:monospace; color:#a5b4fc; margin-top:2px">—</div>
       </div>
       <div>
-        <div style="font-size:.6rem; color:var(--t3); text-transform:uppercase; font-weight:700">网络运营商 (ISP)</div>
-        <div id="top-active-isp" style="font-size:.82rem; font-weight:700; color:var(--text); margin-top:2px">—</div>
+        <div style="font-size:.6rem; color:var(--t3); text-transform:uppercase; font-weight:700">实时上下行网速</div>
+        <div id="top-active-rate" style="font-size:.86rem; font-weight:900; margin-top:2px">
+          <span style="color:#22c55e">↓ 0 KB/s</span>
+          <span style="color:var(--t3);margin:0 4px">|</span>
+          <span style="color:#38bdf8">↑ 0 KB/s</span>
+        </div>
       </div>
       <div>
         <div style="font-size:.6rem; color:var(--t3); text-transform:uppercase; font-weight:700">国内 / 国际延迟</div>
@@ -752,6 +777,13 @@ footer{text-align:center;padding:12px;color:var(--t3);font-size:.63rem;border-to
 
 <script>
 function fmtB(b){const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++;}return b.toFixed(1)+' '+u[i];}
+function fmtRate(b){
+  if(!b || b <= 0) return '0 B/s';
+  const u=['B/s','KB/s','MB/s','GB/s'];
+  let i=0;
+  while(b>=1024&&i<3){b/=1024;i++;}
+  return b.toFixed(1)+' '+u[i];
+}
 function pct(u,t){return t>0?Math.round(u/t*100):0}
 function pillC(s){return s==='up'?'pill p-up':s==='down'?'pill p-dn':'pill p-unk'}
 function pillL(s){return s==='up'?'在线':s==='down'?'离线':'未知'}
@@ -773,7 +805,7 @@ function toast(msg,ok=true,dur=4000){
 const intelCache = {};
 
 async function doRefresh(){
-  cdSec=15;document.getElementById('cd').textContent='';
+  cdSec=10;document.getElementById('cd').textContent='';
   const rb=document.querySelector('.rbtn');rb.innerHTML='<span class="spin">⟳</span>';
   try{const d=await fetch('/api/status').then(r=>r.json());applyStatus(d);}
   catch(e){toast('刷新失败: '+e,false);}
@@ -791,15 +823,31 @@ function applyStatus(d){
   const activeWifi = (d.wifi_networks||[]).find(n=>n.in_use);
   let activeName = gw || '未知';
   let activeType = '有线以太网';
+  let activeIfcInfo = null;
   if(gw && (gw.startsWith('wl') || gw === primaryWifi)){
     activeName = activeWifi ? activeWifi.ssid : '无线网络 ('+gw+')';
     activeType = '无线 Wi-Fi';
+    activeIfcInfo = (d.wireless_hw||[]).find(w=>w.name===gw) || (d.wireless_hw||[])[0];
   } else if(gw && (gw.startsWith('en') || gw.startsWith('eth'))){
     activeName = '有线网卡 ('+gw+')';
     activeType = '千兆有线网络';
+    activeIfcInfo = (d.wired||[]).find(w=>w.name===gw);
   }
   document.getElementById('top-active-name').textContent = activeName;
   document.getElementById('top-active-type').textContent = activeType;
+
+  // Real-time Upload / Download Rate on Top Banner
+  if(activeIfcInfo){
+    const downRate = fmtRate(activeIfcInfo.rx_rate || 0);
+    const upRate = fmtRate(activeIfcInfo.tx_rate || 0);
+    document.getElementById('top-active-rate').innerHTML = `
+      <span style="color:#22c55e">↓ ${downRate}</span>
+      <span style="color:var(--t3);margin:0 4px">|</span>
+      <span style="color:#38bdf8">↑ ${upRate}</span>
+    `;
+  } else {
+    document.getElementById('top-active-rate').innerHTML = `<span style="color:var(--t3)">↓ 0 B/s | ↑ 0 B/s</span>`;
+  }
 
   // Bind active gateway geoip to top banner
   if(gw && intelCache[gw]){
@@ -807,7 +855,6 @@ function applyStatus(d){
     const geo = ig.geo || {};
     document.getElementById('top-active-geo').textContent = `${ig.flag||'🌍'} ${geo.country||'未知'} · ${geo.city||''}`;
     document.getElementById('top-active-ip').textContent = geo.query || '—';
-    document.getElementById('top-active-isp').textContent = geo.org || geo.isp || '—';
     const ld = ig.latency?.domestic_ms, lg = ig.latency?.international_ms;
     document.getElementById('top-active-lat').innerHTML = `
       <span class="${latC(ld)}">🇨🇳 ${ld!=null?ld+'ms':'超时'}</span>
@@ -843,8 +890,10 @@ function applyStatus(d){
         <div class="stats">
           <div class="st"><div class="k">本地 IP</div><div class="v">${ifc.ip||'—'}</div></div>
           <div class="st"><div class="k">协商速率</div><div class="v">${ifc.speed||'—'}</div></div>
-          <div class="st"><div class="k">↓ 已收</div><div class="v">${fmtB(ifc.rx_bytes||0)}</div></div>
-          <div class="st"><div class="k">↑ 已发</div><div class="v">${fmtB(ifc.tx_bytes||0)}</div></div>
+          <div class="st"><div class="k">实时下行</div><div class="v" style="color:#22c55e;font-weight:800">↓ ${fmtRate(ifc.rx_rate||0)}</div></div>
+          <div class="st"><div class="k">实时上行</div><div class="v" style="color:#38bdf8;font-weight:800">↑ ${fmtRate(ifc.tx_rate||0)}</div></div>
+          <div class="st"><div class="k">累计已收</div><div class="v">${fmtB(ifc.rx_bytes||0)}</div></div>
+          <div class="st"><div class="k">累计已发</div><div class="v">${fmtB(ifc.tx_bytes||0)}</div></div>
         </div>
         <div class="intel ${cached?'ok':''}" id="intel-${ifc.name}">
           ${cached ? renderIntelContent(cached, ifc.name) : `
@@ -865,7 +914,8 @@ function applyStatus(d){
   const wHW=d.wireless_hw||[];
   document.getElementById('wifi-hw').textContent=wHW.map(w=>`${w.name} (${pillL(w.state)})`).join(' / ');
 
-  applyWifiList(d.wifi_networks||[], gw, primaryWifi);
+  const primaryWifiInfo = wHW.find(w=>w.name===primaryWifi) || wHW[0] || {};
+  applyWifiList(d.wifi_networks||[], gw, primaryWifi, primaryWifiInfo);
 
   const dm=d.dns.mode;
   const dl={domestic:'🇨🇳 国内 DNS',overseas:'🌐 国际 DNS',custom:'⚙️ 自定义'};
@@ -927,7 +977,8 @@ function renderIntelContent(d, name){
   `;
 }
 
-function applyWifiList(nets, gw, primaryWifi){
+function applyWifiList(nets, gw, primaryWifi, primaryWifiInfo){
+  primaryWifiInfo = primaryWifiInfo || {};
   const wl=document.getElementById('wifi-list');
   document.getElementById('wifi-count').textContent=nets.length ? `· ${nets.length} 个网络` : '';
   if(!nets.length){
@@ -970,6 +1021,12 @@ function applyWifiList(nets, gw, primaryWifi){
         </div>
       </div>
       ${connected ? `
+        <div class="stats" style="margin-top:6px;padding:6px 9px;background:rgba(0,0,0,0.25);border-radius:5px">
+          <div class="st"><div class="k">本地 IP</div><div class="v">${primaryWifiInfo.ip||'—'}</div></div>
+          <div class="st"><div class="k">实时下行</div><div class="v" style="color:#22c55e;font-weight:800">↓ ${fmtRate(primaryWifiInfo.rx_rate||0)}</div></div>
+          <div class="st"><div class="k">实时上行</div><div class="v" style="color:#38bdf8;font-weight:800">↑ ${fmtRate(primaryWifiInfo.tx_rate||0)}</div></div>
+          <div class="st"><div class="k">累计流量</div><div class="v">${fmtB((primaryWifiInfo.rx_bytes||0)+(primaryWifiInfo.tx_bytes||0))}</div></div>
+        </div>
         <div class="intel ${cached?'ok':''}" id="intel-${primaryWifi}">
           ${cached ? renderIntelContent(cached, primaryWifi) : `
             <span style="color:var(--t3);font-size:.68rem">正在自动查询当前 WiFi 网络属性与出口国家…</span>
